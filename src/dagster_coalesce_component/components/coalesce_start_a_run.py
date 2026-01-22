@@ -28,7 +28,7 @@ class CoalesceStartARun(dg.Component, dg.Model, dg.Resolvable):
     for the specified nodes. Use node selectors to control which Coalesce nodes
     to execute. Supports upstream dependencies from other Dagster assets.
 
-    Example YAML usage:
+    Example YAML usage (Basic Auth):
         type: dagster_coalesce_component.components.coalesce_start_a_run.CoalesceStartARun
         attributes:
           asset_key: "coalesce_staging_layer"
@@ -37,6 +37,21 @@ class CoalesceStartARun(dg.Component, dg.Model, dg.Resolvable):
           environment_id: "{{ env.COALESCE_ENVIRONMENT_ID }}"
           snowflake_username: "{{ env.SNOWFLAKE_USERNAME }}"
           snowflake_password: "{{ env.SNOWFLAKE_PASSWORD }}"
+          snowflake_warehouse: "{{ env.SNOWFLAKE_WAREHOUSE }}"
+          snowflake_role: "{{ env.SNOWFLAKE_ROLE }}"
+          include_nodes_selector: "{ location: TARGET name: STG_USERS }"
+          group_name: "coalesce_etl"
+
+    Example YAML usage (Key/Pair Auth):
+        type: dagster_coalesce_component.components.coalesce_start_a_run.CoalesceStartARun
+        attributes:
+          asset_key: "coalesce_staging_layer"
+          base_url: "app.coalescesoftware.io"
+          bearer_token: "{{ env.COALESCE_BEARER_TOKEN }}"
+          environment_id: "{{ env.COALESCE_ENVIRONMENT_ID }}"
+          snowflake_username: "{{ env.SNOWFLAKE_USERNAME }}"
+          snowflake_keypair_key: "{{ env.SNOWFLAKE_KEYPAIR_KEY }}"
+          snowflake_keypair_pass: "{{ env.SNOWFLAKE_KEYPAIR_PASS }}"
           snowflake_warehouse: "{{ env.SNOWFLAKE_WAREHOUSE }}"
           snowflake_role: "{{ env.SNOWFLAKE_ROLE }}"
           include_nodes_selector: "{ location: TARGET name: STG_USERS }"
@@ -54,7 +69,14 @@ class CoalesceStartARun(dg.Component, dg.Model, dg.Resolvable):
 
     # Snowflake Credentials for Coalesce runs
     snowflake_username: str = ""
+
+    # Basic Auth (username/password)
     snowflake_password: str = ""
+
+    # Key/Pair Auth
+    snowflake_keypair_key: str = ""  # PEM-encoded private key
+    snowflake_keypair_pass: str = ""  # Password to decrypt key (optional, only if key is encrypted)
+
     snowflake_warehouse: str
     snowflake_role: str
 
@@ -95,6 +117,8 @@ class CoalesceStartARun(dg.Component, dg.Model, dg.Resolvable):
         environment_id = self.environment_id
         snowflake_username = self.snowflake_username
         snowflake_password = self.snowflake_password
+        snowflake_keypair_key = self.snowflake_keypair_key
+        snowflake_keypair_pass = self.snowflake_keypair_pass
         snowflake_warehouse = self.snowflake_warehouse
         snowflake_role = self.snowflake_role
         include_nodes_selector = self.include_nodes_selector
@@ -145,6 +169,8 @@ class CoalesceStartARun(dg.Component, dg.Model, dg.Resolvable):
                 environment_id=environment_id,
                 snowflake_username=snowflake_username,
                 snowflake_password=snowflake_password,
+                snowflake_keypair_key=snowflake_keypair_key,
+                snowflake_keypair_pass=snowflake_keypair_pass,
                 snowflake_warehouse=snowflake_warehouse,
                 snowflake_role=snowflake_role,
                 include_nodes_selector=include_nodes_selector,
@@ -176,6 +202,8 @@ def _start_coalesce_run(
     environment_id: str,
     snowflake_username: str,
     snowflake_password: str,
+    snowflake_keypair_key: str,
+    snowflake_keypair_pass: str,
     snowflake_warehouse: str,
     snowflake_role: str,
     include_nodes_selector: Optional[str] = None,
@@ -183,7 +211,10 @@ def _start_coalesce_run(
     job_id: Optional[str] = None,
     parallelism: int = 16,
 ) -> str:
-    """Start a Coalesce run and return the run counter."""
+    """Start a Coalesce run and return the run counter.
+
+    Supports both Basic authentication (username/password) and Key/Pair authentication.
+    """
 
     url = f"https://{base_url}/scheduler/startRun"
 
@@ -206,15 +237,34 @@ def _start_coalesce_run(
         run_details["jobID"] = job_id
         context.log.info(f"Using job ID: {job_id}")
 
-    payload = {
-        "runDetails": run_details,
-        "userCredentials": {
+    # Determine authentication method and build userCredentials
+    if snowflake_keypair_key:
+        # Use Key/Pair authentication
+        context.log.info("Using Key/Pair authentication")
+        user_credentials = {
+            "snowflakeUsername": snowflake_username,
+            "snowflakeKeyPairKey": snowflake_keypair_key,
+            "snowflakeWarehouse": snowflake_warehouse,
+            "snowflakeRole": snowflake_role,
+            "snowflakeAuthType": "KeyPair"
+        }
+        # Add keypair password only if provided (for encrypted keys)
+        if snowflake_keypair_pass:
+            user_credentials["snowflakeKeyPairPass"] = snowflake_keypair_pass
+    else:
+        # Use Basic authentication (username/password)
+        context.log.info("Using Basic authentication")
+        user_credentials = {
             "snowflakeUsername": snowflake_username,
             "snowflakePassword": snowflake_password,
             "snowflakeWarehouse": snowflake_warehouse,
             "snowflakeRole": snowflake_role,
             "snowflakeAuthType": "Basic"
         }
+
+    payload = {
+        "runDetails": run_details,
+        "userCredentials": user_credentials
     }
 
     headers = {

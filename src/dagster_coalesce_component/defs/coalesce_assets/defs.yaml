@@ -5,7 +5,7 @@ requirements:
     - COALESCE_BEARER_TOKEN
     - COALESCE_ENVIRONMENT_ID
     - SNOWFLAKE_USERNAME
-    - SNOWFLAKE_PASSWORD
+    - SNOWFLAKE_KEYPAIR_KEY
     - SNOWFLAKE_WAREHOUSE
     - SNOWFLAKE_ROLE
 
@@ -21,7 +21,7 @@ attributes:
 
   # Snowflake Credentials
   snowflake_username: "{{ env.SNOWFLAKE_USERNAME }}"
-  snowflake_password: "{{ env.SNOWFLAKE_PASSWORD }}"
+  snowflake_keypair_key: "{{ env.SNOWFLAKE_KEYPAIR_KEY }}"
   snowflake_warehouse: "{{ env.SNOWFLAKE_WAREHOUSE }}"
   snowflake_role: "{{ env.SNOWFLAKE_ROLE }}"
 
