@@ -1,0 +1,29 @@
+type: dagster_coalesce_component.components.coalesce_environment.CoalesceEnvironment
+
+requirements:
+  env:
+    - COALESCE_BEARER_TOKEN
+    - COALESCE_ENVIRONMENT_ID
+    - SNOWFLAKE_USERNAME
+    - SNOWFLAKE_PASSWORD
+    - SNOWFLAKE_WAREHOUSE
+    - SNOWFLAKE_ROLE
+
+attributes:
+  # Coalesce API Configuration
+  base_url: "app.coalescesoftware.io"
+  bearer_token: "{{ env.COALESCE_BEARER_TOKEN }}"
+  environment_id: "{{ env.COALESCE_ENVIRONMENT_ID }}"
+
+  # Snowflake Credentials
+  snowflake_username: "{{ env.SNOWFLAKE_USERNAME }}"
+  snowflake_password: "{{ env.SNOWFLAKE_PASSWORD }}"
+  snowflake_warehouse: "{{ env.SNOWFLAKE_WAREHOUSE }}"
+  snowflake_role: "{{ env.SNOWFLAKE_ROLE }}"
+
+  # Dagster Asset Configuration
+  group_name: "coalesce_etl"
+
+  # Optional: Polling Configuration
+  poll_interval_sec: 10
+  max_wait_time_sec: 3600
