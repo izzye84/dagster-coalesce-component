@@ -126,7 +126,7 @@ class CoalesceStartARun(dg.Component, dg.Model, dg.Resolvable):
     for the specified nodes. Use node selectors to control which Coalesce nodes
     to execute. Supports upstream dependencies from other Dagster assets.
 
-    Example YAML usage (Basic Auth):
+    Example YAML usage:
         type: dagster_coalesce_component.components.coalesce_start_a_run.CoalesceStartARun
         attributes:
           asset_key: "coalesce_staging_layer"
@@ -135,25 +135,15 @@ class CoalesceStartARun(dg.Component, dg.Model, dg.Resolvable):
           environment_id: "{{ env.COALESCE_ENVIRONMENT_ID }}"
           snowflake_username: "{{ env.SNOWFLAKE_USERNAME }}"
           snowflake_password: "{{ env.SNOWFLAKE_PASSWORD }}"
-          snowflake_warehouse: "{{ env.SNOWFLAKE_WAREHOUSE }}"
-          snowflake_role: "{{ env.SNOWFLAKE_ROLE }}"
-          include_nodes_selector: "{ location: TARGET name: STG_USERS }"
-          group_name: "coalesce_etl"
-
-    Example YAML usage (Key/Pair Auth):
-        type: dagster_coalesce_component.components.coalesce_start_a_run.CoalesceStartARun
-        attributes:
-          asset_key: "coalesce_staging_layer"
-          base_url: "app.coalescesoftware.io"
-          bearer_token: "{{ env.COALESCE_BEARER_TOKEN }}"
-          environment_id: "{{ env.COALESCE_ENVIRONMENT_ID }}"
-          snowflake_username: "{{ env.SNOWFLAKE_USERNAME }}"
           snowflake_keypair_key: "{{ env.SNOWFLAKE_KEYPAIR_KEY }}"
           snowflake_keypair_pass: "{{ env.SNOWFLAKE_KEYPAIR_PASS }}"
           snowflake_warehouse: "{{ env.SNOWFLAKE_WAREHOUSE }}"
           snowflake_role: "{{ env.SNOWFLAKE_ROLE }}"
           include_nodes_selector: "{ location: TARGET name: STG_USERS }"
           group_name: "coalesce_etl"
+          deps:
+            - ["upstream_asset_1"]
+            - ["upstream_asset_2"]
     """
 
     # Dagster Asset Configuration
