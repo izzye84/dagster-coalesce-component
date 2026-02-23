@@ -11,6 +11,7 @@ import time
 from typing import Optional, List, Dict, Any
 from enum import Enum
 from pydantic import field_validator
+from pathlib import Path
 
 
 class CoalesceRunStatus(Enum):
@@ -21,6 +22,103 @@ class CoalesceRunStatus(Enum):
     CANCELED = "canceled"
 
 
+class CoalesceStartARunScaffolder(dg.Scaffolder):
+    """Custom scaffolder that pre-populates component parameters."""
+
+    def scaffold(self, request: dg.ScaffoldRequest) -> None:
+        """Create a pre-populated defs.yaml or component.py file with all parameters filled in."""
+
+        # Default values for scaffolding
+        default_values = {
+            "asset_key": "my_coalesce_asset",
+            "group_name": "coalesce",
+            "base_url": "app.coalescesoftware.io",
+            "bearer_token": '{{ env.COALESCE_BEARER_TOKEN }}',
+            "environment_id": '{{ env.COALESCE_ENVIRONMENT_ID }}',
+            "snowflake_username": '{{ env.SNOWFLAKE_USERNAME }}',
+            "snowflake_keypair_key": '{{ env.SNOWFLAKE_KEYPAIR_KEY }}',
+            "snowflake_warehouse": '{{ env.SNOWFLAKE_WAREHOUSE }}',
+            "snowflake_role": '{{ env.SNOWFLAKE_ROLE }}',
+            "include_nodes_selector": "+{name:MY_NODE}",
+            "poll_interval_sec": 10,
+            "max_wait_time_sec": 3600,
+        }
+
+        target_path = Path(request.target_path)
+
+        # Check if we're scaffolding YAML or Python format
+        is_python_format = request.scaffold_format == "python"
+
+        if is_python_format:
+            # Python format - create pre-populated component.py
+            target_path.mkdir(parents=True, exist_ok=True)
+            component_file = target_path / "component.py"
+
+            # Generate the component.py content with all parameters
+            content = f'''"""Coalesce component instance with pre-configured parameters.
+
+Edit the parameters below to match your Coalesce environment and nodes.
+"""
+
+import dagster as dg
+from dagster_coalesce_component.components.coalesce_start_a_run import CoalesceStartARun
+
+
+@dg.component_instance
+def load(_context: dg.ComponentLoadContext) -> CoalesceStartARun:
+    """Load the Coalesce component instance.
+
+    To add dynamic dependencies from a list of assets:
+
+    from my_package.upstream_assets import my_asset_list
+    upstream_deps = [[asset.key.to_user_string()] for asset in my_asset_list]
+
+    Then pass: deps=upstream_deps
+    """
+
+    return CoalesceStartARun(
+        # Dagster Asset Configuration
+        asset_key="{default_values['asset_key']}",
+        group_name="{default_values['group_name']}",
+
+        # Coalesce API Configuration
+        base_url=dg.EnvVar("COALESCE_BASE_URL").get_value("{default_values['base_url']}"),
+        bearer_token=dg.EnvVar("COALESCE_BEARER_TOKEN").get_value(""),
+        environment_id=dg.EnvVar("COALESCE_ENVIRONMENT_ID").get_value(""),
+
+        # Snowflake Credentials (Key/Pair Auth)
+        snowflake_username=dg.EnvVar("SNOWFLAKE_USERNAME").get_value(""),
+        snowflake_keypair_key=dg.EnvVar("SNOWFLAKE_KEYPAIR_KEY").get_value(""),
+        snowflake_warehouse=dg.EnvVar("SNOWFLAKE_WAREHOUSE").get_value(""),
+        snowflake_role=dg.EnvVar("SNOWFLAKE_ROLE").get_value(""),
+
+        # For Basic Auth instead of Key/Pair, use:
+        # snowflake_password=dg.EnvVar("SNOWFLAKE_PASSWORD").get_value(""),
+
+        # Coalesce Run Configuration
+        include_nodes_selector="{default_values['include_nodes_selector']}",
+
+        # Optional: Exclude specific nodes
+        # exclude_nodes_selector="{{name:TEST_TABLE}}",
+
+        # Optional: Define upstream dependencies
+        # deps=[["upstream_asset_1"], ["upstream_asset_2"]],
+
+        # Polling Configuration
+        poll_interval_sec={default_values['poll_interval_sec']},
+        max_wait_time_sec={default_values['max_wait_time_sec']},
+    )
+'''
+
+            component_file.write_text(content)
+            print(f"✓ Created pre-populated component.py at {component_file}")
+        else:
+            # YAML format - use default Dagster scaffolding with our values
+            dg.scaffold_component(request, default_values)
+            print(f"✓ Created pre-populated defs.yaml")
+
+
+@dg.scaffold_with(CoalesceStartARunScaffolder)
 class CoalesceStartARun(dg.Component, dg.Model, dg.Resolvable):
     """Execute Coalesce nodes as a single Dagster asset.
 
@@ -37,10 +135,15 @@ class CoalesceStartARun(dg.Component, dg.Model, dg.Resolvable):
           environment_id: "{{ env.COALESCE_ENVIRONMENT_ID }}"
           snowflake_username: "{{ env.SNOWFLAKE_USERNAME }}"
           snowflake_password: "{{ env.SNOWFLAKE_PASSWORD }}"
+          snowflake_keypair_key: "{{ env.SNOWFLAKE_KEYPAIR_KEY }}"
+          snowflake_keypair_pass: "{{ env.SNOWFLAKE_KEYPAIR_PASS }}"
           snowflake_warehouse: "{{ env.SNOWFLAKE_WAREHOUSE }}"
           snowflake_role: "{{ env.SNOWFLAKE_ROLE }}"
           include_nodes_selector: "{ location: TARGET name: STG_USERS }"
           group_name: "coalesce_etl"
+          deps:
+            - ["upstream_asset_1"]
+            - ["upstream_asset_2"]
     """
 
     # Dagster Asset Configuration
@@ -54,7 +157,14 @@ class CoalesceStartARun(dg.Component, dg.Model, dg.Resolvable):
 
     # Snowflake Credentials for Coalesce runs
     snowflake_username: str = ""
+
+    # Basic Auth (username/password)
     snowflake_password: str = ""
+
+    # Key/Pair Auth
+    snowflake_keypair_key: str = ""  # PEM-encoded private key
+    snowflake_keypair_pass: str = ""  # Password to decrypt key (optional, only if key is encrypted)
+
     snowflake_warehouse: str
     snowflake_role: str
 
@@ -95,6 +205,8 @@ class CoalesceStartARun(dg.Component, dg.Model, dg.Resolvable):
         environment_id = self.environment_id
         snowflake_username = self.snowflake_username
         snowflake_password = self.snowflake_password
+        snowflake_keypair_key = self.snowflake_keypair_key
+        snowflake_keypair_pass = self.snowflake_keypair_pass
         snowflake_warehouse = self.snowflake_warehouse
         snowflake_role = self.snowflake_role
         include_nodes_selector = self.include_nodes_selector
@@ -145,6 +257,8 @@ class CoalesceStartARun(dg.Component, dg.Model, dg.Resolvable):
                 environment_id=environment_id,
                 snowflake_username=snowflake_username,
                 snowflake_password=snowflake_password,
+                snowflake_keypair_key=snowflake_keypair_key,
+                snowflake_keypair_pass=snowflake_keypair_pass,
                 snowflake_warehouse=snowflake_warehouse,
                 snowflake_role=snowflake_role,
                 include_nodes_selector=include_nodes_selector,
@@ -176,6 +290,8 @@ def _start_coalesce_run(
     environment_id: str,
     snowflake_username: str,
     snowflake_password: str,
+    snowflake_keypair_key: str,
+    snowflake_keypair_pass: str,
     snowflake_warehouse: str,
     snowflake_role: str,
     include_nodes_selector: Optional[str] = None,
@@ -183,7 +299,10 @@ def _start_coalesce_run(
     job_id: Optional[str] = None,
     parallelism: int = 16,
 ) -> str:
-    """Start a Coalesce run and return the run counter."""
+    """Start a Coalesce run and return the run counter.
+
+    Supports both Basic authentication (username/password) and Key/Pair authentication.
+    """
 
     url = f"https://{base_url}/scheduler/startRun"
 
@@ -206,15 +325,34 @@ def _start_coalesce_run(
         run_details["jobID"] = job_id
         context.log.info(f"Using job ID: {job_id}")
 
-    payload = {
-        "runDetails": run_details,
-        "userCredentials": {
+    # Determine authentication method and build userCredentials
+    if snowflake_keypair_key:
+        # Use Key/Pair authentication
+        context.log.info("Using Key/Pair authentication")
+        user_credentials = {
+            "snowflakeUsername": snowflake_username,
+            "snowflakeKeyPairKey": snowflake_keypair_key,
+            "snowflakeWarehouse": snowflake_warehouse,
+            "snowflakeRole": snowflake_role,
+            "snowflakeAuthType": "KeyPair"
+        }
+        # Add keypair password only if provided (for encrypted keys)
+        if snowflake_keypair_pass:
+            user_credentials["snowflakeKeyPairPass"] = snowflake_keypair_pass
+    else:
+        # Use Basic authentication (username/password)
+        context.log.info("Using Basic authentication")
+        user_credentials = {
             "snowflakeUsername": snowflake_username,
             "snowflakePassword": snowflake_password,
             "snowflakeWarehouse": snowflake_warehouse,
             "snowflakeRole": snowflake_role,
             "snowflakeAuthType": "Basic"
         }
+
+    payload = {
+        "runDetails": run_details,
+        "userCredentials": user_credentials
     }
 
     headers = {
