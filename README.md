@@ -130,6 +130,7 @@ Templates support any Python string method — e.g. `{{ node.node_type.lower() }
 | `node.node_type` | `"Stage"`, `"Fact"`, `"Dimension"`, `"Source"` |
 | `node.database` | `"DEMO_DB2"` |
 | `node.schema` | `"IZZY_SANDBOX"` |
+| `node.description` | `"Staged users from raw source"` (empty string if not set in Coalesce) |
 | `node.node_selector` | `"{location: TARGET name: STG_USERS}"` |
 
 ---
@@ -144,7 +145,7 @@ Use `DagsterCoalesceTranslator` for logic that can't be expressed as a template 
 |---|---|
 | `get_asset_key(node)` | `AssetKey([location_name, name])` (lowercased) |
 | `get_group_name(node)` | `None` (falls back to component `group_name`) |
-| `get_description(node)` | `"Coalesce {node_type}: {name} in {location_name}"` |
+| `get_description(node)` | Coalesce node description if set, otherwise `None` |
 | `get_metadata(node)` | `node_id`, `node_type`, `database`, `schema`, `location`, `node_selector`, `column_schema` |
 | `get_kinds(node)` | `{"coalesce", "snowflake"}` (Source nodes: `{"coalesce"}`) |
 | `get_asset_spec(node, default_group)` | Calls all of the above — override for full control |

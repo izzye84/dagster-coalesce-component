@@ -1,9 +1,10 @@
 """Coalesce.io State-Backed Component for Dagster.
 
 This component fetches node metadata from a Coalesce environment at CI/CD time,
-stores it as a state file, and creates one Dagster asset per Coalesce node with
-full dependency lineage. Each asset triggers a single-node Coalesce run when
-materialized, letting Dagster control execution order.
+stores it as a state file, and creates a single multi_asset with one output per
+Coalesce node. Dependencies are wired from the Coalesce project graph. When
+materialized, each selected node triggers its own single-node Coalesce run
+sequentially within the op, letting Dagster control execution order.
 """
 
 import json
@@ -59,6 +60,7 @@ class CoalesceNodeData:
     schema: str
     dep_asset_keys: list[dg.AssetKey]
     columns: list[CoalesceColumnData]
+    description: str = ""
 
     @property
     def node_selector(self) -> str:
@@ -94,8 +96,12 @@ class DagsterCoalesceTranslator:
         return None
 
     def get_description(self, node: CoalesceNodeData) -> Optional[str]:
-        """Return the asset description."""
-        return f"Coalesce {node.node_type}: {node.name} in {node.location_name}"
+        """Return the asset description.
+
+        Uses the Coalesce node description if one is set, otherwise returns None.
+        Override to provide a custom description or fallback.
+        """
+        return node.description or None
 
     def get_metadata(self, node: CoalesceNodeData) -> dict[str, Any]:
         """Return metadata dict attached to the asset definition."""
@@ -150,21 +156,24 @@ class DagsterCoalesceTranslator:
 # -----------------------------------------------------------------------------
 
 class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
-    """Execute Coalesce nodes as individual Dagster assets with full dependency lineage.
+    """Execute Coalesce nodes as Dagster assets with full dependency lineage.
 
     This component fetches node metadata from a Coalesce environment at CI/CD time
     (via `dg utils refresh-defs-state`) and stores it locally as a state file. At
-    definition load time, one Dagster asset is created per Coalesce node, with
-    dependencies wired from the Coalesce project graph. When materialized,
-    each asset triggers a single-node Coalesce run.
+    definition load time, a single ``@multi_asset`` is created covering all executable
+    Coalesce nodes, with one output per node and dependencies wired from the Coalesce
+    project graph. Source nodes (non-executable) are returned as bare ``AssetSpec``
+    entries so they appear in the lineage graph as external assets.
 
-    Dagster controls execution order (no `+` selector prefix), giving full
-    lineage visibility and per-node observability in the Dagster UI.
+    When materialized, each selected node triggers a single-node Coalesce run,
+    executed sequentially within the op. Dagster controls execution order —
+    no ``+`` selector prefix is used.
 
-    Asset keys, group names, descriptions, metadata, and kinds can all be
-    customized by passing a subclassed DagsterCoalesceTranslator.
+    Asset keys, group names, descriptions, metadata, and kinds can be customized
+    via a ``DagsterCoalesceTranslator`` subclass or YAML ``translation`` field.
 
-    Example YAML usage:
+    Example YAML usage::
+
         type: dagster_coalesce_component.components.coalesce_project_component.CoalesceProjectComponent
         attributes:
           base_url: "app.coalescesoftware.io"
@@ -287,6 +296,7 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
                     "nodeType": node.get("nodeType"),
                     "database": node.get("database"),
                     "schema": node.get("schema"),
+                    "description": detailed.get("description", ""),
                     "dependencies": deps,
                     "columns": columns,
                 })
@@ -299,6 +309,7 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
                     "nodeType": node.get("nodeType"),
                     "database": node.get("database"),
                     "schema": node.get("schema"),
+                    "description": "",
                     "dependencies": [],
                     "columns": [],
                 })
@@ -314,7 +325,11 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
     def build_defs_from_state(
         self, _context: dg.ComponentLoadContext, state_path: Optional[Path]
     ) -> dg.Definitions:
-        """Build one Dagster asset per Coalesce node, with dependencies wired from state."""
+        """Build a single multi_asset covering all executable Coalesce nodes.
+
+        Source nodes (read-only, not executable) are returned as bare AssetSpecs
+        alongside the multi_asset so they appear in the lineage graph.
+        """
         if state_path is None:
             print(
                 "Warning: No Coalesce state file found. Run `dg utils refresh-defs-state` "
@@ -350,13 +365,95 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
                     translator.get_asset_key(stub)
                 )
 
-        assets = []
-        for node in nodes:
-            asset = self._create_asset_for_node(node, node_key_map, translator)
-            assets.append(asset)
+        # Separate source nodes (external AssetSpecs) from executable nodes (multi_asset outputs)
+        source_specs: list[dg.AssetSpec] = []
+        executable_specs: list[dg.AssetSpec] = []
+        # Map AssetKey -> CoalesceNodeData for execution-time lookup
+        node_data_by_key: dict[dg.AssetKey, CoalesceNodeData] = {}
 
-        print(f"Created {len(assets)} Dagster assets from Coalesce state")
-        return dg.Definitions(assets=assets)
+        for node in nodes:
+            node_data, spec = self._build_node_spec(node, node_key_map, translator)
+            if node_data.node_type == "Source":
+                source_specs.append(spec)
+            else:
+                executable_specs.append(spec)
+                node_data_by_key[spec.key] = node_data
+
+        if not executable_specs:
+            print("Warning: No executable nodes found in Coalesce state")
+            return dg.Definitions(assets=source_specs)
+
+        # Capture execution-time config in locals for closure
+        base_url = self.base_url
+        bearer_token = self.bearer_token
+        environment_id = self.environment_id
+        snowflake_username = self.snowflake_username
+        snowflake_password = self.snowflake_password
+        snowflake_keypair_key = self.snowflake_keypair_key
+        snowflake_keypair_pass = self.snowflake_keypair_pass
+        snowflake_warehouse = self.snowflake_warehouse
+        snowflake_role = self.snowflake_role
+        poll_interval_sec = self.poll_interval_sec
+        max_wait_time_sec = self.max_wait_time_sec
+
+        @dg.multi_asset(specs=executable_specs, can_subset=True)
+        def coalesce_project_assets(context: dg.AssetExecutionContext):
+            """Execute each selected Coalesce node as a single-node run."""
+            for output_name in context.selected_output_names:
+                asset_key = context.asset_key_for_output(output_name)
+                node_data = node_data_by_key[asset_key]
+
+                context.log.info(
+                    f"Starting Coalesce run for node: "
+                    f"{node_data.location_name}.{node_data.name}"
+                )
+
+                run_counter = _start_coalesce_run(
+                    context=context,
+                    base_url=base_url,
+                    bearer_token=bearer_token,
+                    environment_id=environment_id,
+                    snowflake_username=snowflake_username,
+                    snowflake_password=snowflake_password,
+                    snowflake_keypair_key=snowflake_keypair_key,
+                    snowflake_keypair_pass=snowflake_keypair_pass,
+                    snowflake_warehouse=snowflake_warehouse,
+                    snowflake_role=snowflake_role,
+                    node_selector=node_data.node_selector,
+                )
+
+                _run_completed = False
+                try:
+                    _poll_run_results(
+                        context=context,
+                        base_url=base_url,
+                        bearer_token=bearer_token,
+                        run_counter=run_counter,
+                        poll_interval_sec=poll_interval_sec,
+                        max_wait_time_sec=max_wait_time_sec,
+                        output_name=output_name,
+                    )
+                    _run_completed = True
+                finally:
+                    if not _run_completed:
+                        context.log.warning(
+                            f"Dagster op interrupted — canceling Coalesce run {run_counter}"
+                        )
+                        _cancel_coalesce_run(
+                            context=context,
+                            base_url=base_url,
+                            bearer_token=bearer_token,
+                            run_counter=run_counter,
+                            environment_id=environment_id,
+                        )
+
+                yield dg.Output(value=None, output_name=output_name)
+
+        print(
+            f"Created multi_asset with {len(executable_specs)} executable nodes "
+            f"and {len(source_specs)} source nodes from Coalesce state"
+        )
+        return dg.Definitions(assets=[coalesce_project_assets, *source_specs])
 
     # -------------------------------------------------------------------------
     # Internal helpers
@@ -405,13 +502,13 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
         response.raise_for_status()
         return response.json()
 
-    def _create_asset_for_node(
+    def _build_node_spec(
         self,
         node: dict[str, Any],
         node_key_map: dict[tuple[str, str], dg.AssetKey],
         translator: DagsterCoalesceTranslator,
-    ) -> "dg.AssetsDefinition | dg.AssetSpec":
-        """Create a Dagster asset for a single Coalesce node."""
+    ) -> tuple[CoalesceNodeData, dg.AssetSpec]:
+        """Build a CoalesceNodeData and AssetSpec for a single Coalesce node."""
         node_name = node.get("name", "unknown")
         node_location = node.get("locationName", "")
 
@@ -442,6 +539,7 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
                 for c in node.get("columns", [])
                 if c.get("name")
             ],
+            description=node.get("description", ""),
         )
 
         spec = translator.get_asset_spec(node_data, default_group=self.group_name)
@@ -450,79 +548,7 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
         if self.translation:
             spec = self.translation(spec, node_data)
 
-        # Source nodes are external references — they cannot be executed in Coalesce.
-        # Return a bare AssetSpec so they appear in the lineage graph as observable/
-        # external assets. Downstream nodes that depend on them will still have their
-        # deps wired correctly, and any upstream Dagster asset with a matching key
-        # (e.g. from Sling or Fivetran) will be automatically consolidated into the graph.
-        if node_data.node_type == "Source":
-            return spec
-
-        # Capture execution-time config in locals for closure
-        base_url = self.base_url
-        bearer_token = self.bearer_token
-        environment_id = self.environment_id
-        snowflake_username = self.snowflake_username
-        snowflake_password = self.snowflake_password
-        snowflake_keypair_key = self.snowflake_keypair_key
-        snowflake_keypair_pass = self.snowflake_keypair_pass
-        snowflake_warehouse = self.snowflake_warehouse
-        snowflake_role = self.snowflake_role
-        poll_interval_sec = self.poll_interval_sec
-        max_wait_time_sec = self.max_wait_time_sec
-        node_selector = node_data.node_selector
-
-        @dg.asset(
-            key=spec.key,
-            deps=spec.deps,
-            description=spec.description,
-            group_name=spec.group_name,
-            kinds=spec.kinds,
-            metadata=spec.metadata,
-        )
-        def coalesce_node_asset(context: dg.AssetExecutionContext) -> None:
-            """Trigger a single-node Coalesce run for this node."""
-            context.log.info(f"Starting Coalesce run for node: {node_location}.{node_name}")
-
-            run_counter = _start_coalesce_run(
-                context=context,
-                base_url=base_url,
-                bearer_token=bearer_token,
-                environment_id=environment_id,
-                snowflake_username=snowflake_username,
-                snowflake_password=snowflake_password,
-                snowflake_keypair_key=snowflake_keypair_key,
-                snowflake_keypair_pass=snowflake_keypair_pass,
-                snowflake_warehouse=snowflake_warehouse,
-                snowflake_role=snowflake_role,
-                node_selector=node_selector,
-            )
-
-            _run_completed = False
-            try:
-                _poll_run_results(
-                    context=context,
-                    base_url=base_url,
-                    bearer_token=bearer_token,
-                    run_counter=run_counter,
-                    poll_interval_sec=poll_interval_sec,
-                    max_wait_time_sec=max_wait_time_sec,
-                )
-                _run_completed = True
-            finally:
-                if not _run_completed:
-                    context.log.warning(
-                        f"Dagster op interrupted — canceling Coalesce run {run_counter}"
-                    )
-                    _cancel_coalesce_run(
-                        context=context,
-                        base_url=base_url,
-                        bearer_token=bearer_token,
-                        run_counter=run_counter,
-                        environment_id=environment_id,
-                    )
-
-        return coalesce_node_asset
+        return node_data, spec
 
 
 # -----------------------------------------------------------------------------
@@ -628,6 +654,7 @@ def _poll_run_results(
     run_counter: str,
     poll_interval_sec: int,
     max_wait_time_sec: int,
+    output_name: str,
 ) -> None:
     """Poll the run results endpoint until the node completes, then emit materialization metadata."""
     url = f"https://{base_url}/api/v1/runs/{run_counter}/results"
@@ -679,7 +706,7 @@ def _poll_run_results(
 
         if run_state == CoalesceRunStatus.COMPLETE.value:
             context.log.info(f"Coalesce run {run_counter} completed successfully")
-            _emit_run_metadata(context, run_counter, query_results)
+            _emit_run_metadata(context, run_counter, query_results, output_name)
             return
 
         elif run_state == CoalesceRunStatus.CANCELED.value:
@@ -705,6 +732,7 @@ def _emit_run_metadata(
     context: dg.AssetExecutionContext,
     _run_counter: str,
     query_results: list[dict[str, Any]],
+    output_name: str,
 ) -> None:
     """Surface key query result fields as Dagster materialization metadata."""
     total_rows_inserted = sum(
@@ -740,7 +768,7 @@ def _emit_run_metadata(
     if primary_sql:
         metadata["sql"] = dg.MetadataValue.md(f"```sql\n{primary_sql.strip()}\n```")
 
-    context.add_output_metadata(metadata)
+    context.add_output_metadata(metadata, output_name=output_name)
 
 
 def _extract_error_detail(query_results: list[dict[str, Any]]) -> str:
