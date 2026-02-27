@@ -289,7 +289,7 @@ Create a `.env` file in the project root:
 
 ```bash
 COALESCE_BEARER_TOKEN=your-bearer-token
-COALESCE_ENVIRONMENT_ID=3
+COALESCE_ENVIRONMENT_ID=your-environment-id
 
 SNOWFLAKE_USERNAME=your-username
 SNOWFLAKE_KEYPAIR_KEY=-----BEGIN PRIVATE KEY-----\n...
