@@ -1,0 +1,28 @@
+type: dagster_coalesce_component.components.coalesce_project_component.CoalesceProjectComponent
+
+# State is stored locally. Run `dg utils refresh-defs-state` during CI/CD to
+# pull the latest node graph from the Coalesce API before deploying.
+
+requirements:
+  env:
+    - COALESCE_BEARER_TOKEN
+    - COALESCE_ENVIRONMENT_ID
+    - SNOWFLAKE_USERNAME
+    - SNOWFLAKE_KEYPAIR_KEY
+    - SNOWFLAKE_WAREHOUSE
+    - SNOWFLAKE_ROLE
+
+attributes:
+  base_url: "app.coalescesoftware.io"
+  bearer_token: "{{ env.COALESCE_BEARER_TOKEN }}"
+  environment_id: "{{ env.COALESCE_ENVIRONMENT_ID }}"
+
+  # Key/Pair auth (remove snowflake_keypair_key and add snowflake_password for Basic auth)
+  snowflake_username: "{{ env.SNOWFLAKE_USERNAME }}"
+  snowflake_keypair_key: "{{ env.SNOWFLAKE_KEYPAIR_KEY }}"
+  snowflake_warehouse: "{{ env.SNOWFLAKE_WAREHOUSE }}"
+  snowflake_role: "{{ env.SNOWFLAKE_ROLE }}"
+
+  group_name: "coalesce"
+  poll_interval_sec: 10
+  max_wait_time_sec: 3600

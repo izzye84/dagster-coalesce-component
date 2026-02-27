@@ -267,15 +267,30 @@ class CoalesceStartARun(dg.Component, dg.Model, dg.Resolvable):
                 parallelism=parallelism,
             )
 
-            # Poll for completion
-            result = _poll_run_status(
-                context=context,
-                base_url=base_url,
-                bearer_token=bearer_token,
-                run_counter=run_counter,
-                poll_interval_sec=poll_interval_sec,
-                max_wait_time_sec=max_wait_time_sec,
-            )
+            # Poll for completion — cancel Coalesce run if Dagster op is interrupted
+            _run_completed = False
+            try:
+                result = _poll_run_status(
+                    context=context,
+                    base_url=base_url,
+                    bearer_token=bearer_token,
+                    run_counter=run_counter,
+                    poll_interval_sec=poll_interval_sec,
+                    max_wait_time_sec=max_wait_time_sec,
+                )
+                _run_completed = True
+            finally:
+                if not _run_completed:
+                    context.log.warning(
+                        f"Dagster op interrupted — canceling Coalesce run {run_counter}"
+                    )
+                    _cancel_coalesce_run(
+                        context=context,
+                        base_url=base_url,
+                        bearer_token=bearer_token,
+                        run_counter=run_counter,
+                        environment_id=environment_id,
+                    )
 
             return result
 
@@ -448,3 +463,40 @@ def _poll_run_status(
     raise Exception(
         f"Coalesce run {run_counter} timed out after {max_wait_time_sec}s"
     )
+
+
+def _cancel_coalesce_run(
+    context: dg.AssetExecutionContext,
+    base_url: str,
+    bearer_token: str,
+    run_counter: str,
+    environment_id: str,
+) -> None:
+    """Cancel an active Coalesce run.
+
+    Called in the finally block when the Dagster op is interrupted (user cancel,
+    timeout, or unexpected error) to ensure the Coalesce run doesn't continue
+    running in the background after Dagster has given up.
+
+    Errors are logged but not re-raised — we're already in a failure/cancel path
+    and don't want to mask the original exception.
+    """
+    url = f"https://{base_url}/scheduler/cancelRun"
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {bearer_token}",
+    }
+    payload = {
+        "runID": int(run_counter),
+        "environmentID": environment_id,
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        response.raise_for_status()
+        context.log.info(f"Coalesce run {run_counter} canceled successfully")
+    except requests.exceptions.RequestException as e:
+        context.log.error(
+            f"Failed to cancel Coalesce run {run_counter}: {e}\n"
+            f"The run may still be active in Coalesce — cancel it manually."
+        )
