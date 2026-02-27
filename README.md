@@ -128,8 +128,8 @@ Templates support any Python string method — e.g. `{{ node.node_type.lower() }
 | `node.name` | `"STG_USERS"` |
 | `node.location_name` | `"TARGET"` |
 | `node.node_type` | `"Stage"`, `"Fact"`, `"Dimension"`, `"Source"` |
-| `node.database` | `"DEMO_DB2"` |
-| `node.schema` | `"IZZY_SANDBOX"` |
+| `node.database` | `"YOUR_DATABASE"` |
+| `node.schema` | `"YOUR_SCHEMA"` |
 | `node.node_selector` | `"{location: TARGET name: STG_USERS}"` |
 
 ---
@@ -288,7 +288,7 @@ Create a `.env` file in the project root:
 
 ```bash
 COALESCE_BEARER_TOKEN=your-bearer-token
-COALESCE_ENVIRONMENT_ID=3
+COALESCE_ENVIRONMENT_ID=your-environment-id
 
 SNOWFLAKE_USERNAME=your-username
 SNOWFLAKE_KEYPAIR_KEY=-----BEGIN PRIVATE KEY-----\n...
