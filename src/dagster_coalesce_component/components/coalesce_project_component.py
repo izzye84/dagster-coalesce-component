@@ -483,13 +483,12 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
         @dg.asset(
             key=spec.key,
             deps=spec.deps,
-            description=spec.description,
+            description=spec.description or "",
             group_name=spec.group_name,
             kinds=spec.kinds,
             metadata=spec.metadata,
         )
         def coalesce_node_asset(context: dg.AssetExecutionContext) -> None:
-            """Trigger a single-node Coalesce run for this node."""
             context.log.info(f"Starting Coalesce run for node: {node_location}.{node_name}")
 
             run_counter = _start_coalesce_run(
