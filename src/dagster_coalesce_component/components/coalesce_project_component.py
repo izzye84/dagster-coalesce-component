@@ -59,6 +59,7 @@ class CoalesceNodeData:
     schema: str
     dep_asset_keys: list[dg.AssetKey]
     columns: list[CoalesceColumnData]
+    description: str = ""
 
     @property
     def node_selector(self) -> str:
@@ -94,8 +95,12 @@ class DagsterCoalesceTranslator:
         return None
 
     def get_description(self, node: CoalesceNodeData) -> Optional[str]:
-        """Return the asset description."""
-        return f"Coalesce {node.node_type}: {node.name} in {node.location_name}"
+        """Return the asset description.
+
+        Uses the Coalesce node description if one is set, otherwise returns None.
+        Override to provide a custom description or fallback.
+        """
+        return node.description or None
 
     def get_metadata(self, node: CoalesceNodeData) -> dict[str, Any]:
         """Return metadata dict attached to the asset definition."""
@@ -287,6 +292,7 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
                     "nodeType": node.get("nodeType"),
                     "database": node.get("database"),
                     "schema": node.get("schema"),
+                    "description": detailed.get("description", ""),
                     "dependencies": deps,
                     "columns": columns,
                 })
@@ -299,6 +305,7 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
                     "nodeType": node.get("nodeType"),
                     "database": node.get("database"),
                     "schema": node.get("schema"),
+                    "description": "",
                     "dependencies": [],
                     "columns": [],
                 })
@@ -442,6 +449,7 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
                 for c in node.get("columns", [])
                 if c.get("name")
             ],
+            description=node.get("description", ""),
         )
 
         spec = translator.get_asset_spec(node_data, default_group=self.group_name)
