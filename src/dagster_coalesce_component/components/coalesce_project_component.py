@@ -398,7 +398,6 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
 
         @dg.multi_asset(specs=executable_specs, can_subset=True)
         def coalesce_project_assets(context: dg.AssetExecutionContext):
-            """Execute each selected Coalesce node as a single-node run."""
             for output_name in context.selected_output_names:
                 asset_key = context.asset_key_for_output(output_name)
                 node_data = node_data_by_key[asset_key]
