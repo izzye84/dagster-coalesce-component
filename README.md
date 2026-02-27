@@ -128,8 +128,8 @@ Templates support any Python string method — e.g. `{{ node.node_type.lower() }
 | `node.name` | `"STG_USERS"` |
 | `node.location_name` | `"TARGET"` |
 | `node.node_type` | `"Stage"`, `"Fact"`, `"Dimension"`, `"Source"` |
-| `node.database` | `"DEMO_DB2"` |
-| `node.schema` | `"IZZY_SANDBOX"` |
+| `node.database` | `"MY_DATABASE"` |
+| `node.schema` | `"MY_SCHEMA"` |
 | `node.description` | `"Staged users from raw source"` (empty string if not set in Coalesce) |
 | `node.node_selector` | `"{location: TARGET name: STG_USERS}"` |
 
