@@ -26,3 +26,6 @@ attributes:
   group_name: "coalesce"
   poll_interval_sec: 10
   max_wait_time_sec: 3600
+
+  translation:
+    group_name: "{{ node.node_type }}"

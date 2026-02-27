@@ -22,6 +22,7 @@ from dagster.components.utils.defs_state import (
     DefsStateConfigArgs,
     ResolvedDefsStateConfig,
 )
+from dagster.components.utils.translation import TranslationFn, TranslationFnResolver
 from pydantic import field_validator
 
 
@@ -191,6 +192,21 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
 
     # Default Dagster Asset Configuration (can be overridden per-node via translator)
     group_name: Optional[str] = "coalesce"
+
+    # Optional YAML-driven asset attribute overrides.
+    # Supports static values or Jinja templates with `node` (CoalesceNodeData) and
+    # `spec` (the base AssetSpec) in scope. Applied on top of the translator output.
+    # Supported fields: key, key_prefix, group_name, description, metadata, tags, kinds, owners.
+    # Example:
+    #   translation:
+    #     key_prefix: "coalesce"
+    #     group_name: "{{ node.node_type.lower() }}"
+    translation: Annotated[
+        Optional[TranslationFn[CoalesceNodeData]],
+        TranslationFnResolver(
+            template_vars_for_translation_fn=lambda node: {"node": node}
+        ),
+    ] = None
 
     # Polling Configuration (used at asset execution time)
     poll_interval_sec: int = 10
@@ -429,6 +445,10 @@ class CoalesceProjectComponent(StateBackedComponent, dg.Model, dg.Resolvable):
         )
 
         spec = translator.get_asset_spec(node_data, default_group=self.group_name)
+
+        # Apply YAML-driven translation overrides on top of the translator output.
+        if self.translation:
+            spec = self.translation(spec, node_data)
 
         # Source nodes are external references — they cannot be executed in Coalesce.
         # Return a bare AssetSpec so they appear in the lineage graph as observable/

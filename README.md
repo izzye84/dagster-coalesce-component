@@ -90,7 +90,53 @@ src/**/defs/.local_defs_state/
 
 #### Customizing asset keys and metadata
 
-`DagsterCoalesceTranslator` controls how each Coalesce node is represented as a Dagster asset. Override individual methods to customize specific aspects, or override `get_asset_spec` for full control.
+There are three levels of customization, from simplest to most powerful:
+
+| Level | Where | Best for |
+|---|---|---|
+| `translation` in YAML | `defs.yaml` | Key prefixes, group names, static overrides |
+| `DagsterCoalesceTranslator` subclass | Python | Per-node logic, upstream key matching |
+| `CoalesceProjectComponent` subclass | Python | Org-wide defaults baked into the component |
+
+---
+
+##### Option 1: YAML `translation` field
+
+Add a `translation` block directly to `defs.yaml`. Supports static values or Jinja templates — `{{ node.* }}` exposes all Coalesce node fields, and `{{ spec.* }}` exposes the base `AssetSpec`.
+
+```yaml
+attributes:
+  # ... connection config ...
+  group_name: "coalesce"
+
+  translation:
+    # Prefix all asset keys with "coalesce"
+    key_prefix: "coalesce"
+
+    # Group by Coalesce node type (Stage, Fact, Dimension, Source)
+    group_name: "{{ node.node_type.lower() }}"
+```
+
+**Available `translation` fields:** `key`, `key_prefix`, `group_name`, `description`, `metadata`, `tags`, `kinds`, `owners`
+
+Templates support any Python string method — e.g. `{{ node.node_type.lower() }}` produces `"stage"` instead of `"Stage"`.
+
+**Available `node` fields in templates:**
+
+| Field | Example |
+|---|---|
+| `node.name` | `"STG_USERS"` |
+| `node.location_name` | `"TARGET"` |
+| `node.node_type` | `"Stage"`, `"Fact"`, `"Dimension"`, `"Source"` |
+| `node.database` | `"DEMO_DB2"` |
+| `node.schema` | `"IZZY_SANDBOX"` |
+| `node.node_selector` | `"{location: TARGET name: STG_USERS}"` |
+
+---
+
+##### Option 2: Python translator subclass
+
+Use `DagsterCoalesceTranslator` for logic that can't be expressed as a template — most commonly, mapping Source node keys to match an upstream tool.
 
 **Available methods:**
 
@@ -100,24 +146,8 @@ src/**/defs/.local_defs_state/
 | `get_group_name(node)` | `None` (falls back to component `group_name`) |
 | `get_description(node)` | `"Coalesce {node_type}: {name} in {location_name}"` |
 | `get_metadata(node)` | `node_id`, `node_type`, `database`, `schema`, `location`, `node_selector`, `column_schema` |
-| `get_kinds(node)` | `{"coalesce", "snowflake"}` |
+| `get_kinds(node)` | `{"coalesce", "snowflake"}` (Source nodes: `{"coalesce"}`) |
 | `get_asset_spec(node, default_group)` | Calls all of the above — override for full control |
-
-**`CoalesceNodeData` fields available in all methods:**
-
-| Field | Type | Example |
-|---|---|---|
-| `node.id` | `str` | `"ca8937e6-..."` |
-| `node.name` | `str` | `"STG_USERS"` |
-| `node.location_name` | `str` | `"TARGET"` |
-| `node.node_type` | `str` | `"Stage"`, `"Fact"`, `"Dimension"`, `"Source"` |
-| `node.database` | `str` | `"DEMO_DB2"` |
-| `node.schema` | `str` | `"IZZY_SANDBOX"` |
-| `node.dep_asset_keys` | `list[AssetKey]` | upstream asset keys |
-| `node.columns` | `list[CoalesceColumnData]` | column name + data type |
-| `node.node_selector` | `str` | `"{location: TARGET name: STG_USERS}"` |
-
-**Example — group by node type, prefix non-source keys:**
 
 ```python
 from dagster_coalesce_component.components.coalesce_project_component import (
@@ -128,12 +158,7 @@ from dagster_coalesce_component.components.coalesce_project_component import (
 import dagster as dg
 
 class MyTranslator(DagsterCoalesceTranslator):
-    def get_asset_key(self, node: CoalesceNodeData) -> dg.AssetKey:
-        # Prefix all keys with "coalesce" for non-source nodes
-        return dg.AssetKey(["coalesce", node.location_name.lower(), node.name.lower()])
-
     def get_group_name(self, node: CoalesceNodeData) -> str:
-        # Group assets by Coalesce node type (Stage, Fact, Dimension, Source)
         return node.node_type.lower()
 
 class MyCoalesceComponent(CoalesceProjectComponent):
@@ -141,30 +166,35 @@ class MyCoalesceComponent(CoalesceProjectComponent):
         return MyTranslator()
 ```
 
-#### Matching asset keys to upstream tools (Fivetran, Sling, etc.)
+Reference the subclass in `defs.yaml`:
 
-Coalesce Source nodes appear as external assets in Dagster with keys like `["src", "users"]` by default. If your upstream tool (Fivetran, Sling, Airbyte, etc.) produces assets with different keys, the lineage graph will be disconnected.
+```yaml
+type: my_project.components.my_coalesce.MyCoalesceComponent
 
-Use `get_asset_key` to align Source node keys with whatever the upstream tool produces. Dagster will automatically consolidate them into a single node in the asset graph.
+attributes:
+  # ... same attributes as CoalesceProjectComponent ...
+```
+
+---
+
+#### Matching upstream asset keys (Fivetran, Sling, etc.)
+
+Coalesce `Source` nodes appear as external assets in Dagster with default keys like `["src", "users"]`. If your upstream ingestion tool (Fivetran, Sling, Airbyte, etc.) produces assets under different keys, the lineage graph will be disconnected.
+
+Use `get_asset_key` in a translator to align Source node keys with whatever the upstream tool produces. Dagster will automatically consolidate matching keys into a single node in the asset graph — no extra configuration needed on the upstream side.
 
 ```python
 class MyTranslator(DagsterCoalesceTranslator):
     def get_asset_key(self, node: CoalesceNodeData) -> dg.AssetKey:
         if node.node_type == "Source":
-            # Fivetran assets are keyed as [connector_name, schema, table]
-            # e.g. fivetran/postgres_prod/public/users
+            # Match Fivetran asset keys: [connector_name, schema, table]
             return dg.AssetKey(["fivetran", "postgres_prod", node.schema.lower(), node.name.lower()])
-
-        # Non-source nodes keep the default [location, name] key
-        return dg.AssetKey([node.location_name.lower(), node.name.lower()])
+        return super().get_asset_key(node)
 ```
 
-For Sling, the key structure depends on your replication config but typically follows `[stream_name]` or `[schema, table]`. Match whatever key the upstream component produces — the pattern is the same regardless of tool.
-
-If your sources map to different upstream systems, you can handle them case-by-case:
+For sources spread across multiple upstream tools, map them individually:
 
 ```python
-# Map individual Coalesce source names to their upstream Dagster asset keys
 _SOURCE_KEY_MAP = {
     "USERS":     dg.AssetKey(["fivetran", "postgres_prod", "public", "users"]),
     "ORDERS":    dg.AssetKey(["fivetran", "postgres_prod", "public", "orders"]),
@@ -176,18 +206,6 @@ class MyTranslator(DagsterCoalesceTranslator):
         if node.node_type == "Source" and node.name in _SOURCE_KEY_MAP:
             return _SOURCE_KEY_MAP[node.name]
         return super().get_asset_key(node)
-```
-
-To use a custom component subclass, reference it in YAML instead of the base class:
-
-```yaml
-type: my_project.components.my_coalesce.MyCoalesceComponent
-
-attributes:
-  base_url: "app.coalescesoftware.io"
-  bearer_token: "{{ env.COALESCE_BEARER_TOKEN }}"
-  environment_id: "{{ env.COALESCE_ENVIRONMENT_ID }}"
-  # ... rest of attributes unchanged
 ```
 
 ---
